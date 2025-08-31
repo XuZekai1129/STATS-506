@@ -1,0 +1,264 @@
+---
+title: "STATS-506 HW1"
+author: "Zekai Xu"
+date: today
+format:
+  pdf:
+    engine: xelatex
+    execute:
+      echo: true
+  html:
+    #code-fold: true
+    #code-summary: "Show the code"
+    execute:
+      echo: true
+---
+
+# Question 1
+
+## Part (a)
+
+```{r}
+# Read `abalone.data`
+abalone <- read.csv("abalone.data", header = FALSE)
+# Manually set data.frame column name
+names(abalone) <- c("Sex", "Length", "Diameter", "Height", "Whole weight",
+                    "Shucked weight", "Viscera weight", "Shell weight", "Rings")
+# Print head of data
+head(abalone)
+```
+
+## Part (b)
+
+```{r}
+# Count the number of observations belonging to each sex
+table(abalone$Sex)
+```
+
+## Part (c)
+
+1.
+```{r}
+# Compute correlation of all weight columns and rings
+corr_mat <- cor(abalone[, - (1:4)])
+# Extract correlation between all weight columns and rings
+corr_mat <- corr_mat[, "Rings"]
+# Display correlation
+corr_mat
+```
+**Shell weight** has the highest correlation with Rings.
+
+2.
+```{r}
+library(dplyr)
+abalone %>%
+  group_by(Sex) %>%
+  summarise(corr = cor(`Shell weight`, Rings))
+```
+For Shell weight, sex I (infant) has the highest correlation.
+
+3.
+```{r}
+abalone %>%
+  filter(Rings == max(Rings)) %>%
+  select(`Whole weight`, `Shucked weight`, `Viscera weight`, `Shell weight`)
+```
+4.
+
+```{r}
+mean(abalone$`Viscera weight` > abalone$`Shell weight`) * 100
+```
+6.5% of abalones have a viscera weight larger than their shell weight.
+
+## Part (d)
+
+```{r}
+corr_table <- abalone %>%
+  group_by(Sex) %>%
+  summarize(across(c(`Whole weight`, `Shucked weight`, `Viscera weight`, `Shell weight`),
+                   ~ cor(.x, Rings)))
+corr_table
+```
+
+## Part (e)
+
+```{r}
+pairwise.t.test(abalone$Rings, abalone$Sex, p.adjust.method = "bonferroni")
+```
+Since all pairwise t-test p-values are well below 0.05, we conclude that sex is a significant factor influencing the number of rings.
+
+# Question 2
+
+## Part (a)
+
+```{r}
+food_exp <- read.csv("food_expenditure.csv", header = TRUE)
+head(food_exp)
+```
+
+## Part (b)
+
+```{r}
+names(food_exp) <- c(
+  "ID",
+  "Age",
+  "FamilySize",
+  "State",
+  "Currency",
+  "FoodExp",
+  "GroceryExp",
+  "DiningExp",
+  "MiscExp",
+  "DiningOutCount",
+  "AlcoholIncluded",
+  "FoodAssistProg"
+)
+head(food_exp)
+```
+
+## Part (c)
+
+```{r}
+n_before <- nrow(food_exp)
+n_after <- nrow(subset(food_exp, Currency == "USD"))
+
+cat("Before restricting: ", n_before, "\n")
+cat("After restricting: ", n_after, "\n")
+```
+
+## Part (d)
+
+Records were excluded if the reported age was below 18 or above 100.
+```{r}
+food_clean <- food_exp %>%
+  filter(Age >= 18, Age <= 100)
+summary(food_clean$Age)
+```
+
+## Part (e)
+
+Records were excluded if the reported state was invalid american state abbreviation. 
+```{r}
+# Create vector containing all valid american states abbreviation
+valid_states <- c(state.abb, "DC")
+
+food_clean <- food_clean %>%
+  filter(State %in% valid_states)
+unique(food_clean$State)
+```
+
+## Part (f)
+
+Records were excluded if any expenditure of the four was below 0 or above 10000.
+```{r}
+# Convert `FoodExp` column in numeric value
+food_clean$FoodExp <- as.numeric((food_clean$FoodExp))
+
+food_clean <- food_clean %>%
+  filter(FoodExp >= 0, FoodExp <= 10000,
+         GroceryExp >= 0, GroceryExp <= 10000,
+         DiningExp >= 0, DiningExp <= 10000,
+         MiscExp >= 0, MiscExp <= 10000)
+summary(food_clean[, c("FoodExp", "GroceryExp", "DiningExp", "MiscExp")])
+```
+
+## Part (g)
+
+Records were excluded if the reported dining out number was below 0 or above 30.
+```{r}
+food_clean <- food_clean %>%
+  filter(DiningOutCount >= 0, DiningOutCount <= 30)
+summary(food_clean$DiningOutCount)
+```
+
+## Part (h)
+```{r}
+n_after <- nrow(food_clean)
+cat("Number of observations after cleaning: ", n_after, "\n")
+```
+
+# Question 3
+
+## Part (a)
+
+```{r}
+#' Compute the next Collatz number
+#' @parameter n: a positive integer
+#' @return Integer: the next number in the Collatz sequence
+nextCollatz <- function(n)
+{
+  # Error handling
+  if (!is.numeric(n) || length(n) != 1 || n <= 0 || n != as.integer(n))
+  {
+    stop("Input must be a single positive integer!")
+  }
+  
+  # Compute next Collatz number
+  if (n %% 2 == 0)
+    return (n / 2)
+  else
+    return (3 * n + 1)
+}
+nextCollatz(5)
+nextCollatz(16)
+```
+
+## Part (b)
+
+```{r}
+#' Compute entire Collatz sequence
+#' @parameter n: a positive integer
+#' @returnn a 2-element list: [Collatz sequence, sequence length]
+
+collatzSequence <- function(n)
+{
+  # Error handling
+  if (!is.numeric(n) || length(n) != 1 || n <= 0 || n != as.integer(n))
+  {
+    stop("Input must be a single positive integer!")
+  }
+  
+  # Generate the Collatz sequence
+  seq_vals <- n
+  while (n != 1)
+  {
+    if (n %% 2 == 0)
+      n <- n / 2
+    else
+      n <- 3 * n + 1
+    seq_vals <- c(seq_vals, n)
+  }
+  return (list(sequence = seq_vals, length = length(seq_vals)))
+}
+
+collatzSequence(5)
+collatzSequence(19)
+```
+
+## Part (c)
+
+```{r}
+shortest_val <- Inf
+shortest_seq_len <- Inf
+longest_val <- Inf
+longest_seq_len <- 0
+for (i in 100:500)
+{
+  # Compute current Collatz sequence length
+  current_seq_len <- collatzSequence(i)$length
+  
+  if (current_seq_len < shortest_seq_len) # Update shortest sequence length
+  {
+    shortest_val <- i
+    shortest_seq_len <- current_seq_len
+  }
+  else if (current_seq_len > longest_seq_len) # Update longest sequence length
+  {
+    longest_val <- i
+    longest_seq_len <- current_seq_len
+  }
+}
+# Print final result
+cat("The shortest Collatz sequence starts with: ", shortest_val, "\n")
+cat("The longest Collatz sequence starts with: ", longest_val, "\n")
+```
