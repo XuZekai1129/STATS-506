@@ -1,0 +1,340 @@
+---
+title: "STATS-506 HW2"
+author: "Zekai Xu"
+date: today
+format:
+  pdf:
+    engine: xelatex
+    execute:
+      echo: true
+  html:
+    #code-fold: true
+    #code-summary: "Show the code"
+    execute:
+      echo: true
+---
+
+```{r, echo=FALSE, include=FALSE }
+library(dplyr)
+library(microbenchmark)
+```
+
+[Github Repo](https://github.com/XuZekai1129/STATS-506)
+
+# Question 1
+
+## Part a
+
+```{r}
+#' Compute random walk using explicit loops
+#' @parameter n, a positive integer, number of steps
+#' @return an integer, position after random walk
+random_walk1 <- function(n)
+{
+  current <- 0
+  for (i in 1:n)
+  {
+    direction <- runif(1)
+    if (direction <= 0.5 ) # Left
+    {
+      boost <- runif(1)
+      if (boost <= 0.8) # No boost
+      {
+        current <- current - 1
+      }
+      else # Boost
+      {
+        current <- current - 3
+      }
+    }
+    else 
+    {
+      boost <- runif(1)
+      if (boost <= 0.95) # No boost
+      {
+        current <- current + 1
+      }
+      else # Boost
+      {
+        current <- current + 10
+      }
+    }
+  }
+  return (current)
+}
+```
+
+```{r}
+#' Compute random walk using built-in R vectorized functions
+#' @param n, a positive integer, number of steps
+#' @return an integer, position after random walk
+random_walk2 <- function(n)
+{
+  current <- 0
+  
+  rand_nums <- runif(2 * n)
+  
+  direction <- rand_nums[c(TRUE, FALSE)]
+  direction <- as.integer(direction > 0.5)
+  
+  boost <- rand_nums[c(FALSE, TRUE)]
+  boost <- as.integer((direction == 0 & boost > 0.8) | (direction == 1 & boost > 0.95))
+  
+  steps <- ifelse(direction == 1, 1 + 9 * boost, -1 - 2 * boost)
+  return (sum(steps))
+}
+```
+
+```{r}
+#' Compute random walk using one of the `apply` functions
+#' @param n, a positive integer, number of steps
+#' @return an integer, position after random walk
+random_walk3 <- function(n)
+{
+  steps <- sapply(1:n, \(i){
+    direction <- runif(1)
+    if (direction <= 0.5) # Left
+    {
+      boost <- runif(1)
+      if (boost <= 0.8)
+        return (-1)
+      else
+        return (-3)
+    }
+    else # Right
+    {
+      boost <- runif(1)
+      if (boost <= 0.95)
+        return (1)
+      else
+        return (10)
+    }
+  })
+  return (sum(steps))
+}
+```
+
+```{r}
+random_walk1(10)
+random_walk2(10)
+random_walk3(10)
+random_walk1(1000)
+random_walk2(1000)
+random_walk3(1000)
+```
+
+## Part b
+```{r}
+SEED <- 43
+
+set.seed(SEED)
+random_walk1(10)
+random_walk1(1000)
+
+set.seed(SEED)
+random_walk2(10)
+random_walk2(1000)
+
+set.seed(SEED)
+random_walk3(10)
+random_walk3(1000)
+```
+
+## Part c
+```{r}
+TIMES <- 10
+N1 <- 1000
+N2 <- 100000
+
+result_1k <- microbenchmark(random_walk1(N1), random_walk2(N1), 
+                            random_walk3(N1), times = TIMES)
+result_100k <- microbenchmark(random_walk1(N2), random_walk2(N2), 
+                            random_walk3(N2), times = TIMES)
+
+print(result_1k)
+print(result_100k)
+```
+Based on the benchmark results, the vectorized implementation (random_walk2) is consistently the fastest, being nearly twenty times quicker than the explicit loop (random_walk1) and over twenty-five times faster than the apply-family version (random_walk3) for both small and large input sizes. The explicit loop performs moderately well, faster than the apply approach but still much slower than vectorization, while the apply family is the slowest due to the overhead of repeated function calls. Overall, vectorization clearly outperforms the other methods, especially as the problem size grows.
+
+## Part d
+
+The random walk is $Y = \sum_{i=1}^n X_i$, where $X_i$ i.i.d follows discrete pdf:
+$$
+  P(X_i = -3) = 0.1, \quad P(X_i = -1) = 0.4,\quad P(X_i = 1) = 0.475,\quad P(X_i = 10) = 0.025
+$$
+Note $X_i$ has finite variance, therefore we could apply central limit theorem:
+$$
+  \frac{\bar{X} - E[X_i]}{\sqrt{Var(X_i)}/\sqrt{n}}\overset{d}{\rightarrow} N(0, 1)
+\Rightarrow
+  Y \overset{d}{\rightarrow} N(nE[X_i], nVar(X_i))
+$$
+To compute the probability, we adopt **local** central limit theorem, and the approximate probability of $Y=0$ can be calculated as follow:
+$$
+  P(Y = 0) \approx \frac{h}{\sqrt{2\pi nVar(X_i)}}exp\{-\frac{1}{2nVar(X_i)}(0 - nE[X_i])^2\}\\
+$$
+where h is the lattice span (the greatest common divisor of all pairwise differences between possible values of $X_i$), i.e. the spacing of the grid on which the distribution is supported. In this question, $h=1$.
+
+The expectation and variance of $X_i$ are:
+\begin{align*}
+  E[X_i] & = 0.025\\
+  Var(X_i) & = E[X_i^2] - E^2[X_i] = 4.274375
+\end{align*}
+
+Now we could compute the asymptotic probability with number of steps 10, 100 and 1000:
+\begin{align*}
+  P(Y = 0; n = 10) & = 0.06097562\\
+  P(Y = 0; n = 100) & = 0.01915573\\
+  P(Y = 0; n = 1000) & = 0.00567182
+\end{align*}
+
+Monte Carlo Simulation
+```{r}
+#' Monte Carlo Simulation of random walk back to 0 after n steps
+#' @param n, a positive integer, number of steps
+#' @param N, a positive integer, number of simulations
+#' @param seed, a positive integer, random number seed
+#' @return frequency of random walk back to 0 after n steps
+simul <- function(n, N = 1e4, seed = SEED)
+{
+  vals <- c(-3, -1, 1, 10)
+  probs <- c(0.1, 0.4, 0.475, 0.025)
+  
+  set.seed(seed)
+  steps <- matrix(sample(vals, size = N * n, replace = TRUE, prob = probs), nrow = N)
+  sums <- rowSums(steps)
+  
+  return (sum(sums == 0) / N)
+}
+simul(10)
+simul(100)
+simul(1000)
+```
+
+Notice that for $n = 100$ and $n = 1000$, the theoretical asymptotic probability obtained from the local CLT is very close to the empirical frequency from the Monte Carlo simulation, which supports the validity of the local CLT approximation in large samples. However, when n is small (e.g., $n = 10$), the discrepancy between the theoretical probability and the simulation result is substantial, reflecting the inaccuracy of the asymptotic approximation in the small-sample regime.
+
+# Question 2
+```{r}
+set.seed(SEED)
+(
+  sum(rpois(7, 1)) # Midnight - 7AM
++ sum(rnorm(2, 60, sqrt(12))) # 7AM - 9AM
++ sum(rpois(7, 7)) # 9AM - 4PM
++ sum(rnorm(2, 60, sqrt(12))) # 4PM - 6PM
++ sum(rpois(6, 12)) # 6PM - Midnight
+) / 24
+```
+
+# Question 3
+
+```{r, echo=FALSE, include=FALSE}
+youtube <- read.csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-03-02/youtube.csv')
+```
+
+## Part a
+
+```{r}
+columns2drop <- c("brand", "superbowl_ads_dot_com_url", "youtube_url",
+                  "id", "etag", "published_at", "title", "description",
+                  "thumbnail", "channel_title", "kind")
+youtube_deid <- youtube %>% 
+  select(-all_of(columns2drop))
+dim(youtube_deid)
+```
+
+## Part b
+
+**View counts**: category 2
+```{r}
+qqnorm(youtube_deid$view_count)
+```
+The View counts columns is heavily right-skewed, and is therefore not suitable to serve as outcome variable directly
+```{r}
+qqnorm(log(1 + youtube_deid$view_count))
+```
+Through transformation log(1 + x), the data is approximately normal, and is therefore appropriate to serve as outcome variable
+```{r}
+youtube_deid$view_count <- log(1 + youtube_deid$view_count)
+```
+**Like counts**: category 2
+```{r}
+qqnorm(youtube_deid$like_count)
+```
+The Like counts columns is heavily right-skewed, and is therefore not suitable to serve as outcome variable directly
+```{r}
+qqnorm(log(1 + youtube_deid$like_count))
+```
+Through transformation log(1 + x), the data is approximately normal, and is therefore appropriate to serve as outcome variable
+```{r}
+youtube_deid$like_count <- log(1 + youtube_deid$like_count)
+```
+
+**Dislike counts**: category 2
+```{r}
+qqnorm(youtube_deid$dislike_count)
+```
+The Dislike counts columns is heavily right-skewed, and is therefore not suitable to serve as outcome variable directly
+```{r}
+qqnorm(log(1 + youtube_deid$dislike_count))
+```
+Through transformation log(1 + x), the data is approximately normal, and is therefore appropriate to serve as outcome variable
+```{r}
+youtube_deid$dislike_count <- log(1 + youtube_deid$dislike_count)
+```
+
+**Favorite counts**: category 3
+```{r}
+unique(youtube_deid$favorite_count)
+```
+The Favorite counts only has 0 and NA values, which is categorical, and this column is therefore not suitable to seve as outcome variable.
+
+**Comment counts**: category 2
+```{r}
+qqnorm(youtube_deid$comment_count)
+```
+The Comment counts columns is heavily right-skewed, and is therefore not suitable to serve as outcome variable directly
+```{r}
+qqnorm(log(1 + youtube_deid$comment_count))
+```
+Throught transformation log(1 + x), the data is approximately normal, and is therefore appropriate to serve as outcome variable
+```{r}
+youtube_deid$comment_count <- log(1 + youtube_deid$comment_count)
+```
+
+## Part c
+
+```{r}
+outcomes <- c("view_count", "like_count", "dislike_count", "comment_count")
+predictors <- "funny + show_product_quickly + patriotic + 
+              celebrity + danger + animals + use_sex + year"
+models <- lapply(outcomes, function(y)
+{
+  formula <- as.formula(paste(y, "~", predictors))
+  lm(formula, data = youtube_deid)
+})
+
+lapply(models, summary)
+```
+Across the four linear regression models, the advertising characteristics showed little consistent association with YouTube engagement metrics, as most binary flags were statistically insignificant. The only notable effects were that ads featuring danger tended to receive more likes, and patriotic ads showed some evidence of attracting more dislikes and comments, though these results were only marginally significant. In contrast, year was a consistent predictor: newer ads were associated with significantly higher numbers of likes and dislikes, and a marginally higher number of comments, reflecting the overall growth of YouTube engagement over time. However, the explanatory power of all models was low (R² values below 0.1), indicating that engagement is likely driven by other unobserved factors such as brand influence, ad content quality, or promotion strategy.
+
+## Part d
+
+```{r}
+vars <- c("view_count", "funny","show_product_quickly","patriotic",
+          "celebrity","danger","animals","use_sex","year")
+# Filter na
+dat <- youtube_deid[, vars]
+dat <- dat[complete.cases(dat),]
+
+form <- ~ funny + show_product_quickly + patriotic + celebrity + danger + animals + use_sex + year
+X <- model.matrix(form, data = dat)
+y <- dat$view_count 
+
+XtX   <- crossprod(X)                     
+XtX_i <- solve(XtX)                     
+Xty   <- crossprod(X, y)                 
+beta_hat <- XtX_i %*% Xty   
+
+beta_hat
+
+summary(models[[1]])
+```
