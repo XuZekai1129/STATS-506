@@ -215,13 +215,14 @@ Notice that for $n = 100$ and $n = 1000$, the theoretical asymptotic probability
 # Question 2
 ```{r}
 set.seed(SEED)
+
 (
-  sum(rpois(7, 1)) # Midnight - 7AM
-+ sum(rnorm(2, 60, sqrt(12))) # 7AM - 9AM
-+ sum(rpois(7, 7)) # 9AM - 4PM
-+ sum(rnorm(2, 60, sqrt(12))) # 4PM - 6PM
-+ sum(rpois(6, 12)) # 6PM - Midnight
-) / 24
+  sum(rpois(8, 1)) # Midnight - 7AM
++ sum(rnorm(1, 60, sqrt(12))) # 8AM
++ sum(rpois(8, 7)) # 9AM - 4PM
++ sum(rnorm(1, 60, sqrt(12))) # 5PM
++ sum(rpois(6, 12)) # 6PM - 11PM
+)
 ```
 
 # Question 3
