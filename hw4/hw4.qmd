@@ -1,0 +1,322 @@
+---
+title: "STATS-506 HW4"
+author: "Zekai Xu"
+date: today
+format:
+  pdf:
+    engine: xelatex
+    execute:
+      echo: true
+      include: true
+  html:
+    #code-fold: true
+    #code-summary: "Show the code"
+    execute:
+      echo: true
+---
+
+```{r, echo=FALSE, include=FALSE }
+library(dplyr)
+library(knitr)
+library(stargazer)
+library(microbenchmark)
+library(haven)
+library(broom)
+library(kableExtra)
+library(emmeans)
+library(magrittr)
+library(DBI)
+library(RSQLite)
+library(stringr)
+library(urltools)
+library(ggplot2)
+library(tidyverse)
+library(infer)
+library(lubridate)
+library(slider)
+
+# Question 1 
+library(nzelect)
+```
+
+[Github Repo](https://github.com/XuZekai1129/STATS-506)
+
+# Question 1
+
+## Part a
+```{r, echo=TRUE, include=TRUE}
+# Load Dataset
+data(nzge)
+
+tbl <- nzge %>% 
+  group_by(election_year, voting_type) %>% 
+  summarize(vote_count = sum(votes, na.rm = TRUE), .groups="drop") %>% 
+  arrange(desc(vote_count))
+
+print(tbl)
+```
+## Part b
+```{r, echo=TRUE, include=TRUE}
+tbl <- nzge %>% 
+  filter(voting_type == "Candidate" & election_year == "2014") %>% 
+  group_by(party) %>% 
+  summarize(vote_count = sum(votes, na.rm=TRUE), .groups = "drop") %>%
+  mutate(percent = vote_count / sum(vote_count) * 100) %>%
+  arrange(desc(percent))
+
+print(tbl)
+```
+
+
+## Part c
+```{r, echo=TRUE, include=TRUE}
+tbl <- nzge %>% 
+  select(election_year, voting_type, party, votes) %>%
+  group_by(election_year, voting_type, party) %>%
+  summarize(vote_count = sum(votes, na.rm=TRUE), .groups="drop_last") %>%  
+  mutate(percent = vote_count / sum(vote_count)) %>%
+  slice_max(order_by = percent, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(election_year, voting_type, party, percent) %>%
+  pivot_wider(
+    names_from = voting_type,
+    values_from = c(party, percent),
+    names_glue = "{voting_type}_{.value}"
+  ) %>%
+  arrange(election_year)
+
+print(tbl)
+```
+
+
+# Question 2
+
+## Part a
+```{r, echo=TRUE, include=TRUE}
+# Load Dataset
+url <- "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/refs/heads/master/atp_matches_2019.csv"
+tennis <- read_csv(url, show_col_types = FALSE)
+
+num_tour_2019 <- tennis %>% 
+  filter(tourney_date >= "20190101" & tourney_date <= "20191231") %>% 
+  summarize(n_tournaments = n_distinct(tourney_id))
+
+paste0("Number of tournaments that took place in 2019: ", num_tour_2019)
+```
+
+
+## Part b
+```{r, echo=TRUE, include=TRUE}
+winners <- tennis %>%
+  filter(round == "F") %>%
+  group_by(winner_id) %>%
+  summarize(n_tournaments = n_distinct(tourney_id), .groups="drop") %>%
+  arrange(desc(n_tournaments))
+
+multi_winners <- winners %>%
+  filter(n_tournaments > 1)
+
+paste0("Number of players who won more than one tournament: ", dim(multi_winners)[1])
+paste0("Number of tournaments that the most winning player win: ", multi_winners[1, 2])
+```
+
+
+## Part c
+
+We use Bootstrap to build a 95% confidence interval for the mean difference without assuming normality, and the hypothesis is:
+$$
+  H_0:ace_{winner} - ace_{loser} > 0,\quad H_1: ace_{winner} - ace_{loser} \leq 0
+$$
+```{r, echo=TRUE, include=TRUE}
+# Compute per-match difference in aces
+ace_diff <- tennis %>%
+  transmute(diff = w_ace - l_ace) %>%
+  filter(!is.na(diff))
+
+# Observed mean difference
+obs_mean <- ace_diff %>%
+  specify(response = diff) %>%
+  calculate(stat = "mean")
+
+# Bootstrap resampling
+set.seed(506)
+boot_dist <- ace_diff %>%
+  specify(response = diff) %>%
+  generate(reps = 5000, type = "bootstrap") %>%
+  calculate(stat = "mean")
+
+# 95% percentile confidence interval
+lower_bound <- quantile(boot_dist$stat, probs = 0.95)
+paste0("One-sided confidence interval is: [", lower_bound, ", Inf).")
+```
+The 95% doesn't contain 0, and therefore we fail to reject the null hypothesis.
+
+
+## Part d
+```{r, echo=TRUE, include=TRUE}
+win_rate <- tennis %>%
+  select(winner_id, winner_name, loser_id, loser_name) %>%
+  pivot_longer(
+    cols = c(winner_id, loser_id),
+    names_to = "result",
+    values_to = "player_id"
+  ) %>%
+  mutate(
+    player_name = if_else(result == "winner_id", winner_name, loser_name),
+    win = if_else(result == "winner_id", 1, 0)
+  ) %>% 
+  group_by(player_id, player_name) %>%
+  summarize(
+    matches = n(),
+    wins = sum(win),
+    win_rate = wins / matches,
+    .groups = "drop"
+  ) %>%
+  filter(matches >= 5) %>%
+  arrange(desc(win_rate))
+
+win_rate
+
+paste0("The player with the highest wub-rate is: ", win_rate$player_name[1])
+```
+
+# Question 3
+
+## Part a 
+```{r, echo=TRUE, include=TRUE}
+# Load Dataset
+covid <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/refs/heads/master/rolling-averages/us.csv", show_col_types = FALSE)
+
+# Identify Spikes
+k <- 61  # centered rolling window length (~±30 days)
+
+covid_peaks <- covid %>%
+  arrange(date) %>%
+  mutate(
+    # local maxima
+    is_peak  = cases_avg > dplyr::lag(cases_avg) & cases_avg > dplyr::lead(cases_avg),
+    # 61-day centered rolling median as baseline
+    base_med = zoo::rollmedian(cases_avg, k = k, fill = NA, align = "center"),
+    prominence = pmax(cases_avg - base_med, 0)
+  ) %>%
+  filter(is_peak) %>%
+  mutate(
+    thresh = quantile(prominence, 2/3, na.rm = TRUE),
+    spike_type = if_else(prominence >= thresh, "major", "minor")
+  )
+
+ggplot(covid, aes(date, cases_avg)) +
+  geom_line(linewidth = 0.9, color = "gray40") +
+  geom_line(aes(y = zoo::rollmedian(cases_avg, k = 61, fill = NA, align = "center")),
+            color = "black", linetype = "dashed", na.rm = TRUE) +
+  geom_point(data = covid_peaks, aes(y = cases_avg, color = spike_type), size = 2) +
+  scale_color_manual(values = c(major = "#d62728", minor = "#1f77b4")) +
+  labs(
+    title = "U.S. COVID-19 Case Spikes (7-day average)",
+    subtitle = "Spikes = local maxima; baseline = 61-day centered rolling median; prominence top 1/3 = major",
+    x = NULL, y = "Daily cases (7-day average)",
+    color = "Spike",
+    caption = "Source: NYTimes COVID-19 rolling averages"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+```
+There're roughly 5 major spikes:
+
+1. Spring 2020
+2. Winter 2020 - Spring 2021
+3. Summer 2021
+4. Winter 2021 - Spring 2022
+5. Summer 2022
+
+## Part b
+```{r, echo=TRUE, include=TRUE}
+# Load Dataset
+covid_states <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/refs/heads/master/rolling-averages/us-states.csv",
+                         show_col_types = FALSE)
+
+# Compute overall (median) per-capita rate per state
+state_rate <- covid_states %>%
+  group_by(state) %>%
+  summarise(
+    overall_rate = median(cases_avg_per_100k, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(overall_rate))
+
+# Pick top and bottom 3 states
+top_states <- state_rate %>% slice_head(n = 3) %>% pull(state)
+bottom_states <- state_rate %>% slice_tail(n = 3) %>% pull(state)
+
+compare_states <- covid_states %>%
+  filter(state %in% c(top_states, bottom_states))
+
+ggplot(compare_states, aes(date, cases_avg_per_100k, color = state)) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(~ state, ncol = 3, scales = "free_y") +
+  labs(
+    title = "States with Highest vs. Lowest Overall Per-Capita COVID-19 Rates",
+    subtitle = "Based on median of 7-day average cases per 100k population",
+    x = NULL, y = "Cases per 100k (7-day average)",
+    caption = "Source: NYTimes COVID-19 rolling averages (us-states.csv)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+High-rate areas such as `American Samoa`, `Hawaii`, and `Kentucky` show sharp, concentrated peaks, indicating intense but relatively short-lived outbreaks. In contrast, low-rate areas like `New York`, `Northern Mariana Islands`, and `Rhode Island` exhibit lower, broader, or more irregular curves, suggesting more prolonged but less severe transmission.
+
+Overall, the trajectories demonstrate that per-capita intensity and outbreak duration varied greatly across regions, reflecting differences in timing, containment policies, and population density.
+
+## Part c
+```{r, echo=TRUE, include=TRUE}
+# ----- Define "substantial" period -----
+threshold <- 1.0    # cases per 100k
+min_days  <- 7      # consecutive days
+
+# For each state, find first sustained ≥threshold run
+first_substantial <- covid_states %>%
+  arrange(state, date) %>%
+  group_by(state) %>%
+  mutate(
+    above = cases_avg_per_100k >= threshold,
+    run   = data.table::rleid(above)
+  ) %>%
+  group_by(state, run, .add = TRUE) %>%
+  summarise(
+    start_date = first(date),
+    end_date   = last(date),
+    days       = n(),
+    above      = first(above),
+    .groups = "drop_last"
+  ) %>%
+  ungroup() %>%
+  filter(above, days >= min_days) %>%
+  group_by(state) %>%
+  summarise(first_substantial_date = min(start_date), .groups = "drop") %>%
+  arrange(first_substantial_date)
+
+# First 5 states
+first5 <- first_substantial %>% slice_head(n = 5)
+
+# Plot
+early_states <- covid_states %>%
+  filter(state %in% first5$state)
+
+ggplot(early_states, aes(date, cases_avg_per_100k, color = state)) +
+  geom_line(linewidth = 0.9) +
+  geom_vline(
+    data = first5,
+    aes(xintercept = first_substantial_date, color = state),
+    linetype = "dashed", linewidth = 0.7
+  ) +
+  facet_wrap(~ state, ncol = 3, scales = "free_y") +
+  labs(
+    title = "First Five States to Experience Substantial COVID-19 Activity",
+    subtitle = "Defined as ≥1 case per 100k population for ≥7 consecutive days",
+    x = NULL, y = "Cases per 100k (7-day average)",
+    caption = "Source: NYTimes COVID-19 rolling averages (us-states.csv)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+The first five states (or territories) to experience substantial COVID-19 activity were `Guam`, `Louisiana`, `New Jersey`, `New York`, and `Washington`, with outbreaks emerging around March 2020, marking the start of widespread community transmission in the United States.

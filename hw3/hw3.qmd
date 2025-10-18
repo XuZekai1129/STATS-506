@@ -1,0 +1,569 @@
+---
+title: "STATS-506 HW3"
+author: "Zekai Xu"
+date: today
+format:
+  pdf:
+    engine: xelatex
+    execute:
+      echo: true
+      include: true
+  html:
+    #code-fold: true
+    #code-summary: "Show the code"
+    execute:
+      echo: true
+---
+
+```{r, echo=FALSE, include=FALSE }
+library(dplyr)
+library(knitr)
+library(stargazer)
+library(microbenchmark)
+library(haven)
+library(broom)
+library(kableExtra)
+library(emmeans)
+library(magrittr)
+library(DBI)
+library(RSQLite)
+library(stringr)
+library(urltools)
+library(ggplot2)
+library(tidyr)
+```
+
+[Github Repo](https://github.com/XuZekai1129/STATS-506)
+
+# Question 1
+
+## Part a
+
+```{r}
+# Load Dataset
+aux <- as.data.frame(read_xpt("./AUX_I.xpt"))
+demo <- as.data.frame(read_xpt("./DEMO_I.xpt"))
+
+# Merge Dataset
+df <- inner_join(aux, demo, by = "SEQN")
+
+# Print dimension of the merged dataframe
+print(dim(df))
+```
+
+## Part b
+
+```{r}
+# Select columns used in this question
+var2keep <- c(
+  "SEQN", #Identifier
+  "RIAGENDR", #Gender
+  "DMDCITZN", #Citizenship
+  "DMDHHSZA", #Number of children 5 years or younger in the household
+  "INDHHIN2", #Annual household income
+  "AUXTWIDR", #Tympanometric width, right ear
+  "AUXTWIDL"  #Tympanometric width, left ear
+) 
+df_partb <- df[var2keep]
+
+# Rename columns
+names(df_partb) <- c("id", "gender", "citizenship", "numOfKids", "income", "tw_re", "tw_le")
+
+# Convert "unknown" data points to NA values
+df_partb$citizenship[df_partb$citizenship %in% c(77, 99)] <- NA
+df_partb$income[df_partb$income %in% c(77, 99)] <- NA
+
+# Convert categorical column into factor
+df_partb$gender <- factor(
+  df_partb$gender, 
+  levels = c(1, 2), 
+  labels = c("Male", "Female")
+)
+df_partb$citizenship <- factor(
+  df_partb$citizenship,
+  levels = c(1, 2),
+  labels = c("USA", "Other")
+)
+#df_partb$numOfKids <- factor(df_partb$numOfKids)
+#df_partb$income <- factor(df_partb$income)
+
+# Overview of processed data
+glimpse(df_partb)
+```
+
+## Part c
+
+```{r}
+# Create formulas for 4 Poisson Regression model
+preds_1r <- c("gender")
+preds_2r <- c("gender", "citizenship", "numOfKids", "income")
+preds_1l <- c("gender")
+preds_2l <- c("gender", "citizenship", "numOfKids", "income")
+fm_1r <- reformulate(termlabels = preds_1r, response = "tw_re", intercept = TRUE)
+fm_2r <- reformulate(termlabels = preds_2r, response = "tw_re", intercept = TRUE)
+fm_1l <- reformulate(termlabels = preds_1l, response = "tw_le", intercept = TRUE)
+fm_2l <- reformulate(termlabels = preds_2l, response = "tw_le", intercept = TRUE)
+
+# Model
+m_1r <- glm(formula = fm_1r, data = df_partb, family = poisson(link = "log"))
+m_2r <- glm(formula = fm_2r, data = df_partb, family = poisson(link = "log"))
+m_1l <- glm(formula = fm_1l, data = df_partb, family = poisson(link = "log"))
+m_2l <- glm(formula = fm_2l, data = df_partb, family = poisson(link = "log"))
+```
+
+```{r, echo=FALSE}
+# ---------- Helpers ----------
+# McFadden pseudo-R2
+pseudo_r2_mcfadden <- function(mod) {
+  ll_full <- as.numeric(logLik(mod))
+  ll_null <- as.numeric(logLik(update(mod, . ~ 1)))
+  1 - (ll_full / ll_null)
+}
+
+# Tidy to IRR table (drop intercept, add model label)
+tidy_irrs <- function(mod, label) {
+  tidy(mod, conf.int = TRUE, conf.level = 0.95, exponentiate = TRUE) %>%
+    filter(term != "(Intercept)") %>%
+    transmute(
+      Model = label,
+      Term = term,
+      IRR = estimate,
+      `95% CI (low)`  = conf.low,
+      `95% CI (high)` = conf.high,
+      `p-value` = p.value
+    )
+}
+
+# p-value formatting helper
+p_fmt <- function(p) {
+  ifelse(is.na(p), "",
+         ifelse(p < 0.001, "<0.001", formatC(p, format = "f", digits = 3)))
+}
+
+# ---------- Build coef_tbl (IRR table) ----------
+coef_tbl <- bind_rows(
+  tidy_irrs(m_1r, "1R (Right: gender)"),
+  tidy_irrs(m_2r, "2R (Right: gender + citizenship + numOfKids + income)"),
+  tidy_irrs(m_1l, "1L (Left: gender)"),
+  tidy_irrs(m_2l, "2L (Left: gender + citizenship + numOfKids + income)")
+) %>%
+  mutate(
+    IRR              = round(IRR, 2),
+    `95% CI (low)`   = round(`95% CI (low)`, 2),
+    `95% CI (high)`  = round(`95% CI (high)`, 2),
+    `p-value`        = p_fmt(`p-value`)
+  )
+
+# ---------- Build stats_tbl (model-level statistics) ----------
+stats_tbl <- tibble(
+  Model = c("1R", "2R", "1L", "2L"),
+  N     = c(nobs(m_1r), nobs(m_2r), nobs(m_1l), nobs(m_2l)),
+  `Pseudo-R2 (McFadden)` = round(c(
+    pseudo_r2_mcfadden(m_1r),
+    pseudo_r2_mcfadden(m_2r),
+    pseudo_r2_mcfadden(m_1l),
+    pseudo_r2_mcfadden(m_2l)
+  ), 3),
+  AIC   = round(c(AIC(m_1r), AIC(m_2r), AIC(m_1l), AIC(m_2l)), 1)
+)
+
+# ================== Pretty output ==================
+# Compact coefficient display: "IRR [low, high]" + p-value
+coef_out <- coef_tbl %>%
+  mutate(
+    `IRR [95 percent CI]` = paste0(
+      formatC(IRR, format = "f", digits = 2), " [",
+      formatC(`95% CI (low)`,  format = "f", digits = 2), ", ",
+      formatC(`95% CI (high)`, format = "f", digits = 2), "]"
+    )
+  ) %>%
+  select(Model, Term, `IRR [95 percent CI]`, `p-value`)
+
+## ----- Coefficient (IRR) table -----
+kb_coef <- kbl(
+  coef_out,
+  format   = "latex",             
+  booktabs = TRUE,
+  escape   = TRUE,                # escape special chars to avoid \textbf issues
+  align    = c("l", "l", "r", "r"),
+  caption  = "Incidence Rate Ratios (IRR) with 95 percent CI and p-values"
+) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(latex_options = c("striped","hold_position","scale_down")) %>%
+  add_header_above(c(" " = 2, "Effect Size" = 1, " " = 1), escape = TRUE)
+
+# Collapse repeated 'Model' labels 
+kb_coef <- collapse_rows(kb_coef, columns = 1, valign = "top")
+
+kb_coef  # print
+
+## ----- Model statistics table -----
+stats_out <- stats_tbl %>%
+  mutate(
+    N  = formatC(N, big.mark = ",", format = "d"),
+    `Pseudo-R2 (McFadden)` = sprintf("%.3f", `Pseudo-R2 (McFadden)`),
+    AIC = formatC(AIC, big.mark = ",", format = "f", digits = 0)
+  )
+
+kb_stats <- kbl(
+  stats_out,
+  format   = "latex",
+  booktabs = TRUE,
+  escape   = TRUE,                # keep escaping on
+  align    = c("l", "r", "r", "r"),
+  caption  = "Model Fit Statistics: Sample Size, McFadden Pseudo-R2, and AIC"
+) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+
+kb_stats  # print
+```
+
+## Part d
+
+```{r}
+# ---------- (A) Likelihood Ratio Test: does gender improve fit? ----------
+m_2l_nogender <- update(m_2l, . ~ . - gender)
+anova(m_2l_nogender, m_2l, test = "LRT")  # reports Chi-sq, df, p-value
+
+# ---------- (B) IRR difference (Wald/contrast): Female vs Male ----------
+# emmeans on link scale, then contrast on response scale -> ratio = IRR
+emm <- emmeans(m_2l, ~ gender)                 # marginal means (on link scale)
+pairs(emm) %>% summary(type = "response")      # ratio, 95% CI, p-value (IRR Female/Male)
+
+# ---------- (C) Predicted mean TW by gender (adjusted) ----------
+# Response-scale marginal means (i.e., predicted means for each gender)
+summary(emm, type = "response")                # mean, SE, 95% CI for each gender
+```
+### Evidence of Gender Difference (Model 2L)
+
+**Task.** Assess whether males and females differ in (i) their **incidence rate ratio (IRR)** and (ii) the **predicted value** of left-ear tympanometric width (TW), adjusting for citizenship, number of children, and income.
+
+#### 1) Likelihood-Ratio Test (model-level evidence)
+- Compare Model 1 (without gender) vs Model 2L (with gender).
+- ΔDeviance = **19.318** on 1 df, **p = 1.11×10⁻⁵**.
+- **Conclusion:** Reject *H₀: no gender effect*. Adding gender significantly improves model fit.
+
+#### 2) IRR Difference (contrast/Wald test)
+- **IRR (Male / Female) = 0.985**, z = −4.394, **p < 0.0001**.
+- Equivalently, **IRR (Female / Male) ≈ 1.015** → females have about **1.5% higher** expected left-ear TW than males, holding covariates fixed.
+- Interpretation: IRR differs significantly from 1, indicating a statistically significant gender effect on the rate (mean) of TW.
+
+#### 3) Adjusted Predicted Means (response scale)
+- **Male:** 85.7 (95% CI: **85.2–86.1**)
+- **Female:** 87.0 (95% CI: **86.5–87.5**)
+- **Conclusion:** Predicted means differ in the same direction as the IRR result; females have a slightly higher adjusted TW.
+
+### Overall Interpretation
+Both the model-level LRT and the IRR/mean comparisons show a **statistically significant** gender difference in left-ear TW after adjustment. The **effect size is small** (≈ **1.5%** higher for females; ≈ **1.3 units** difference in predicted means), so practical significance should be considered alongside statistical significance.
+
+# Question 2
+
+## Part a
+
+```{r}
+# Connect Database
+file_path <- "./sakila_master.db"
+con <- dbConnect(SQLite(), dbname = file_path)
+
+## ==== Method 1: extract -> compute in R ====
+method1 <- function() {
+  stores <- dbGetQuery(con, "SELECT store_id FROM store")
+
+  customers <- dbGetQuery(con, "
+    SELECT store_id, active
+    FROM customer
+  ") %>%
+    mutate(                         # normalize 'active' to 0/1
+      active = as.integer(tolower(trimws(as.character(active))) %in%
+                            c("1","t","true","y","yes"))
+    )
+
+  per_store <- customers %>%
+    group_by(store_id) %>%
+    summarise(
+      n_customers = n(),
+      n_active    = sum(active),
+      .groups = "drop"
+    ) %>%
+    mutate(pct_active = ifelse(n_customers > 0, 100 * n_active / n_customers, NA_real_))
+
+  stores %>%
+    left_join(per_store, by = "store_id") %>%
+    select(store_id, n_customers, pct_active) %>%
+    arrange(store_id)
+}
+
+## ==== Method 2: single SQL ====
+method2 <- function() {
+  dbGetQuery(con, "
+    SELECT
+      s.store_id,
+      COUNT(c.customer_id) AS n_customers,
+      CASE
+        WHEN COUNT(c.customer_id) = 0 THEN NULL
+        ELSE 100.0 * SUM(
+          CASE
+            WHEN lower(c.active) IN ('1','t','true','y','yes') THEN 1
+            WHEN lower(c.active) IN ('0','f','false','n','no','') THEN 0
+            WHEN c.active = 1 THEN 1
+            WHEN c.active = 0 THEN 0
+            ELSE 0
+          END
+        ) * 1.0 / COUNT(c.customer_id)
+      END AS pct_active
+    FROM store AS s
+    LEFT JOIN customer AS c
+      ON c.store_id = s.store_id
+    GROUP BY s.store_id
+    ORDER BY s.store_id
+  ")
+}
+
+## ==== Run & print ====
+res_r   <- method1() %>% mutate(pct_active = round(pct_active, 2))
+res_sql <- method2()  %>% mutate(pct_active = round(pct_active, 2))
+
+print(res_r)
+print(res_sql)
+
+## ==== Microbenchmark ====
+microbenchmark(
+  two_step_R = method1(),
+  single_SQL = method2(),
+  times = 20L
+)
+```
+Directly using SQL query is way faster than SQl + R approach.
+
+## Part b
+
+```{r}
+## =============== Method 1: Extract tables, then join in R =================
+method1 <- function() {
+  staff   <- dbGetQuery(con, "SELECT staff_id, first_name, last_name, address_id FROM staff")
+  address <- dbGetQuery(con, "SELECT address_id, city_id FROM address")
+  city    <- dbGetQuery(con, "SELECT city_id, country_id FROM city")
+  country <- dbGetQuery(con, "SELECT country_id, country FROM country")
+
+  staff %>%
+    left_join(address, by = "address_id") %>%
+    left_join(city,    by = "city_id") %>%
+    left_join(country, by = "country_id") %>%
+    mutate(full_name = paste(first_name, last_name)) %>%
+    select(staff_id, first_name, last_name, full_name, country) %>%
+    arrange(staff_id)
+}
+
+## =============== Method 2: Single SQL query (one-shot) ====================
+method2 <- function() {
+  dbGetQuery(con, "
+    SELECT
+      s.staff_id,
+      s.first_name,
+      s.last_name,
+      (s.first_name || ' ' || s.last_name) AS full_name,
+      co.country
+    FROM staff AS s
+    JOIN address AS a ON s.address_id = a.address_id
+    JOIN city    AS ci ON a.city_id   = ci.city_id
+    JOIN country AS co ON ci.country_id = co.country_id
+    ORDER BY s.staff_id
+  ")
+}
+
+## =============== Run both & show a sample =================================
+res_r   <- method1()
+res_sql <- method2()
+
+print(head(res_r, 10))
+print(head(res_sql, 10))
+
+## =============== Microbenchmark ===========================================
+mb <- microbenchmark(
+  two_step_R = method1(),
+  single_SQL = method2(),
+  times = 50L
+)
+print(mb)
+```
+Directly using SQL query is way faster than SQl + R approach.
+
+## Part c
+
+```{r}
+# ---------------- Method 1: extract tables -> compute in R ----------------
+method1 <- function() {
+  payment  <- dbGetQuery(con, "SELECT rental_id, amount FROM payment")
+  rental   <- dbGetQuery(con, "SELECT rental_id, inventory_id FROM rental")
+  inventory<- dbGetQuery(con, "SELECT inventory_id, film_id FROM inventory")
+  film     <- dbGetQuery(con, "SELECT film_id, title FROM film")
+
+  # total $ per rental, then map rental -> film -> title
+  per_rental <- payment %>%
+    group_by(rental_id) %>%
+    summarise(rental_value = sum(amount), .groups = "drop") %>%
+    inner_join(rental,    by = "rental_id") %>%
+    inner_join(inventory, by = "inventory_id") %>%
+    inner_join(film,      by = "film_id")
+
+  max_val <- max(per_rental$rental_value, na.rm = TRUE)
+
+  per_rental %>%
+    filter(rental_value == max_val) %>%
+    distinct(title, rental_value) %>%
+    arrange(title)
+}
+
+# ---------------- Method 2: single SQL query ----------------
+method2 <- function() {
+  dbGetQuery(con, "
+    WITH per_rental AS (
+      SELECT rental_id, SUM(amount) AS rental_value
+      FROM payment
+      GROUP BY rental_id
+    ),
+    max_rental AS (
+      SELECT MAX(rental_value) AS max_val FROM per_rental
+    )
+    SELECT f.title, pr.rental_value
+    FROM per_rental pr
+    JOIN rental r     ON pr.rental_id = r.rental_id
+    JOIN inventory i  ON r.inventory_id = i.inventory_id
+    JOIN film f       ON i.film_id = f.film_id
+    WHERE pr.rental_value = (SELECT max_val FROM max_rental)
+    ORDER BY f.title
+  ")
+}
+
+# ---------------- Run & show ----------------
+res_r   <- method1()
+res_sql <- method2()
+
+print(res_r)
+print(res_sql)
+
+# ---------------- Microbenchmark ----------------
+microbenchmark(
+  two_step_R = method1(),
+  single_SQL = method2(),
+  times = 20L
+)
+```
+Directly using SQL query is way faster than SQl + R approach.
+
+# Question 3
+
+## Part a
+
+```{r}
+# Load Dataset
+df <- read.csv("./au-500.csv", sep = ",")
+
+# Calculate percentage 
+pct <- sum(str_detect(df$web, regex("\\.com$"))) / dim(df)[1] * 100
+cat(sprintf("Percentage of websites that end with `.com`: %.2f%%\n", pct))
+```
+
+## Part b
+
+```{r}
+dom <- str_extract(df$email, regex("(?<=@)(?:[A-Za-z0-9-]+\\.)+[A-Za-z]{2,}"))
+sort(table(dom), decreasing = TRUE)[1]
+```
+
+## Part c
+
+```{r}
+p_excl_comma_ws <- mean(str_detect(df$company_name, "[^\\p{L},\\s]"), na.rm = TRUE)
+p_excl_comma_ws_amp <- mean(str_detect(df$company_name, "[^\\p{L},\\s&]"), na.rm = TRUE)
+
+cat(sprintf("Proportion with non-alphabetic (excluding comma/whitespace): %.2f%%\n",
+            100 * p_excl_comma_ws))
+cat(sprintf("Proportion with non-alphabetic (excluding comma/whitespace/&): %.2f%%\n",
+            100 * p_excl_comma_ws_amp))
+```
+
+## Part d 
+```{r}
+phone_cols <- names(df)[str_detect(tolower(names(df)), "(phone|mobile)")]
+
+fmt_au_mobile <- function(x) {
+  d <- str_replace_all(x, "[^0-9]", "") # strip non-digits
+  ifelse(nchar(d) == 10,
+         paste0(substr(d, 1, 4), "-", substr(d, 5, 7), "-", substr(d, 8, 10)),
+         NA_character_)  # not 10 digits -> NA
+}
+
+
+cat("Before:\n")
+print(utils::head(df[phone_cols], 10))
+
+df <- df %>% mutate(across(all_of(phone_cols), fmt_au_mobile))
+
+cat("\nAfter (cell format 1234-567-890):\n")
+print(head(df[phone_cols], 10))
+```
+
+## Part e
+```{r}
+addr_col <- names(df)[str_detect(tolower(names(df)), "address")][1]
+
+# Extract trailing digits as apartment number; keep positive integers only
+apt_num <- df[[addr_col]] %>%
+  as.character() %>%
+  str_extract("\\d+\\s*$") %>%   # trailing number at end of string
+  as.numeric() %>%
+  { .[!is.na(.) & . > 0] }
+
+# Log-transform (natural log)
+log_apt <- log(apt_num)
+
+# Plot histogram (ggplot2)
+ggplot(data.frame(log_apt = log_apt), aes(x = log_apt)) +
+  geom_histogram(bins = 30, linewidth = 0.2) +
+  labs(
+    title = "Histogram of log(apartment numbers) from trailing address digits",
+    x = "log(apartment number)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## Part f
+```{r}
+# Leading digit via logs (no string ops needed)
+ld <- floor(apt_num / (10 ^ floor(log10(apt_num))))
+ld <- ld[ld %in% 1:9]
+
+obs_counts <- table(factor(ld, levels = 1:9))
+n          <- sum(obs_counts)
+obs_prop   <- as.numeric(obs_counts) / n
+exp_prop   <- log10(1 + 1 / (1:9))
+
+# Chi-squared goodness-of-fit vs Benford
+chisq.test(as.numeric(obs_counts), p = exp_prop, rescale.p = TRUE)
+
+# (optional) quick summary
+print(data.frame(
+  digit    = 1:9,
+  observed = as.numeric(obs_counts),
+  expected = round(n * exp_prop, 1),
+  obs_prop = round(obs_prop, 4),
+  exp_prop = round(exp_prop, 4)
+))
+
+# (optional) simple plot
+library(ggplot2)
+library(tidyr)
+
+plot_df <- data.frame(digit = factor(1:9), Observed = obs_prop, Expected = exp_prop) |>
+  pivot_longer(c(Observed, Expected), names_to = "type", values_to = "prop")
+
+ggplot(plot_df, aes(digit, prop, fill = type)) +
+  geom_col(position = "dodge") +
+  labs(title = "Leading digit of apartment numbers vs Benford",
+       x = "Leading digit", y = "Proportion") +
+  theme_minimal()
+```
+The apartment numbers do not follow Benford’s law. The leading digit “1” occurs far less than Benford’s ≈30% expectation, while higher digits (especially 6–9) occur more often, and the distribution lacks the characteristic monotonic decline. These systematic deviations indicate the data would likely fail a Benford goodness-of-fit test. This is consistent with apartment numbers being administratively assigned sequences rather than naturally generated measurements.
