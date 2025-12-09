@@ -1,0 +1,179 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xspace}
+\usepackage{subfigure}
+
+\newcommand{\dataset}{\href{https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if}{\textit{Traffic Crashes -- Crashes}}\xspace}
+
+\title{Volunteers and Donations: How Nonprofits Perceive Their Relative Importance}
+
+\author{
+\IEEEauthorblockN{Zekai Xu}
+\IEEEauthorblockA{Department of Statistics, University of Michigan, Ann Arbor, MI, USA \\
+xuzekai@umich.edu}
+}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Code and data:} \url{https://github.com/XuZekai1129/STATS-506}
+
+\vspace{0.3em}
+\section{Introduction}
+Nonprofit organizations depend heavily on two key resources: volunteers and individual donations. Prior work often studies volunteer engagement and fundraising separately, but less is known about how organizations jointly perceive the importance of these two resources. From a management perspective, it is not obvious whether they function as complements (organizations that value volunteers also value donations) or as substitutes (organizations that rely on volunteers may rely less on monetary contributions, or vice versa).
+
+Using the 2021 public-use file (PUF) of a national nonprofit survey, this project studies the association between organizations’ perceived importance of volunteers and importance of individual donations. We address four questions:
+
+\begin{itemize}
+ \item 1. Is volunteer importance positively associated with donation importance at the organizational level?
+ \item 2. Does this association persist after adjusting for organizational size, region, and service fields (NTEE categories)?
+ \item 3. Is the association modified by organizational size or by whether an organization operates in a single versus multiple NTEE fields?
+ \item 4. Are the main findings robust to alternative survey-weight designs?
+\end{itemize}
+
+We answer these questions using survey-weighted logistic regression, interaction models, and sensitivity analyses.
+
+\section{Data Preprocessing}
+
+We use the 2021 PUF survey, focusing on:
+
+\begin{itemize}
+ \item VolImportance / DonImportance: 5-point Likert scales (1 = Extremely important, …, 5 = Not at all important), with special codes 99 (“does not use/receive”) and -99 (“no answer”).
+ \item SizeStrata: categorical size classes based on financial thresholds (e.g., <100k, 100k–499k, …, 10M+).
+ \item CensusRegion4: Northeast, Midwest, South, West.
+ \item NTEE\_1–NTEE\_26: multiple-response indicators for service fields, coded 1 = checked, -99 = not checked.
+ \item NTEEconf: quality of NTEE classification.
+ \item weight\_complete\_partials, weight\_complete\_only: two survey-weight schemes.
+\end{itemize}
+
+We recode the importance scales by treating values 1--5 as ordered responses and treating -99 and 99 as missing for the analysis. We define a binary outcome: $\texttt{don\_high} = I(\text{DonImportance} \le 2)$, indicating that individual donations are rated “Extremely” or “Very important.” For descriptive and modeling purposes, we construct VolImportance\_f as a categorical variable with levels “Not at all,” “Slightly,” “Moderately,” “Very,” and “Extremely,” using “Not at all” as the reference group.
+
+Each NTEE item is recoded as a 0/1 dummy (1 = field present, 0 = not present). We also compute the number of checked NTEE fields and define a simplified NTEE pattern variable (ntee\_single\_multi) with levels “Single” and “Multiple” among organizations that select at least one field. The analytic sample is restricted to organizations with non-missing VolImportance, DonImportance, and at least one NTEE field; additional complete-case filtering is applied within each model.
+
+\section{Methodology}
+
+\subsection{Main Effect Model}
+
+We define two survey designs using the survey package:
+
+\begin{itemize}
+ \item Design A (main analysis): ids = $\sim$1, weights = weight\_complete\_partials.
+ \item Design B (sensitivity): ids = $\sim$1, weights = weight\_complete\_only.
+\end{itemize}
+
+The main outcome is don\_high. The key predictor is VolImportance\_f. We adjust for SizeStrata, CensusRegion4, and the full set of NTEE dummies (NTEE\_1–NTEE\_26). The main-effect model is:
+
+\begin{align*}
+\text{logit}\{\Pr(don\_high = 1)\}
+ & = \beta_0
++ \boldsymbol{\beta}_{\text{vol}}^\top \,\text{VolImportance\_f}\\
+& + \boldsymbol{\gamma}^\top \,\text{SizeStrata}
++ \boldsymbol{\delta}^\top \,\text{CensusRegion4}\\
+& + \boldsymbol{\theta}^\top \mathbf{NTEE}.
+\end{align*}
+
+We fit this model using svyglm(..., family = quasibinomial()) and report odds ratios (OR = exp(coefficient)) and 95\% confidence intervals.
+
+\subsection{Interaction}
+
+To test for effect modification, we extend the main model in two ways:
+
+\begin{itemize}
+ \item 1. VolImportance $\times$ SizeStrata: We add all pairwise interactions between VolImportance\_f and SizeStrata. Instead of reading coefficients directly, we construct predicted probabilities for all combinations of volunteer-importance levels and size strata, holding region and NTEE pattern at typical values, and plot Pr(don\_high = 1) versus volunteer importance, with one line per size stratum.
+ \item 2. VolImportance $\times$ NTEE pattern: Using the simplified ntee\_single\_multi (None/Single/Multiple), we fit a model with VolImportance\_f $\times$ ntee\_single\_multi and generate predicted probabilities across levels of volunteer importance for each NTEE pattern, holding size and region fixed.
+\end{itemize}
+
+\subsection{Sensitivity Analysis}
+
+We conduct two main sensitivity checks:
+
+\begin{itemize}
+ \item 1. Weight design: We refit the main-effect model under Design B and compare the ORs for VolImportance\_f across designs A and B to assess robustness to including partial completes.
+ \item 2. NTEE modeling: In supplementary models, we replace the full NTEE dummy set with ntee\_single\_multi or omit NTEE covariates, and verify that the estimated association between volunteer importance and don\_high is qualitatively unchanged.
+\end{itemize}
+
+\section{Results}
+
+\subsection{Main Effect Model}
+
+From Fig.~\ref{main_effect}, the main-effect logistic regression under Design A (adjusting for size, region, and NTEE) shows a strong positive association between volunteer importance and high donation importance. Using “Not at all” as the reference, the adjusted odds ratios are approximately:
+
+\begin{itemize}
+ \item Slightly important: OR $\approx$ 1.6 (95\% CI includes 1)
+ \item Moderately important: OR $\approx$ 2.2
+ \item Very important: OR $\approx$ 4.5
+ \item Extremely important: OR $\approx$ 6.2
+\end{itemize}
+
+The ORs for “Moderately,” “Very,” and “Extremely” are clearly greater than 1 and statistically significant, indicating that organizations that assign higher importance to volunteers are substantially more likely to rate individual donations as very or extremely important, even after adjustment. Coefficients for SizeStrata and CensusRegion4 are mostly close to 1 with wide confidence intervals, suggesting relatively weak effects compared to volunteer importance.
+
+\subsection{Interaction}
+
+From Fig.~\ref{interaction_size}, the VolImportance $\times$ SizeStrata interaction model produces predicted probability curves that increase with volunteer importance for all size categories. The curves are largely parallel at moderate and high levels of volunteer importance, indicating that organizational size does not substantially change the strength of the association; size mainly shifts the overall level slightly.
+
+From Fig.~\ref{interaction_ntee}, the VolImportance $\times$ NTEE pattern model shows a similar story. For both single-field and multi-field organizations, predicted probabilities of high donation importance increase with volunteer importance. Differences across NTEE patterns are modest, and confidence intervals overlap. We do not find strong evidence that NTEE pattern fundamentally alters the volunteer–donation relationship.
+
+\subsection{Sensitivity Analysis}
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lll}
+\hline
+design & level & OR\_CI \\
+\hline
+A: complete + partial & Extremely  & 6.15 [3.25, 11.63] \\
+A: complete + partial & Very       & 4.47 [2.52, 7.93]  \\
+A: complete + partial & Moderately & 2.19 [1.24, 3.88]  \\
+A: complete + partial & Slightly   & 1.61 [0.87, 2.98]  \\
+B: complete only      & Extremely  & 7.62 [3.36, 17.30] \\
+B: complete only      & Very       & 4.86 [2.34, 10.10] \\
+B: complete only      & Moderately & 2.41 [1.18, 4.92]  \\
+B: complete only      & Slightly   & 1.69 [0.77, 3.68]  \\
+\hline
+\end{tabular}
+%\caption{Odds ratios and 95\% confidence intervals for high donation importance by volunteer-importance level, under Designs A and B.}
+\label{tab:volimportance_or}
+\end{table}
+
+When we refit the main-effect model under Design B, which uses complete-only weights, the ORs for VolImportance\_f are very similar to those under Design A. For example, the OR for “Extremely important” increases from about 6.2 (Design A) to about 7.6 (Design B), with overlapping 95\% confidence intervals; the pattern of significance across levels is unchanged. This indicates that the main findings are robust to excluding partial completes and to the choice of weight design.
+
+
+\section{Conclusion}
+
+Using survey-weighted data from the 2021 nonprofit PUF, we find strong evidence that organizations that place higher importance on volunteers also place higher importance on individual donations. This positive gradient remains substantial after controlling for organizational size, region, and detailed NTEE service fields, and appears largely stable across size strata and single versus multiple service-field patterns. The results are robust to alternative weighting schemes that include or exclude partially completed surveys.
+
+These findings suggest that, in organizational perceptions, volunteers and individual donations tend to function as complementary resources rather than substitutes: nonprofits that value volunteers highly also tend to view individual donations as critical. While limitations such as cross-sectional data and self-reported measures prevent strong causal claims, the patterns documented here highlight the interconnected nature of human and financial support in nonprofit resource strategies and may inform capacity-building efforts that jointly consider volunteers and donors.
+
+
+\newpage
+
+\section{Appendix}
+
+\begin{figure}[htbp]
+    \centering 
+    \includegraphics[width=\linewidth]{main_effect.png}
+    \caption{Adjusted Odds Ratios from Main Model}
+    \label{main_effect}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering 
+    \includegraphics[width=\linewidth]{interaction_size.png}
+    \caption{Predicted Probability by Volunteer Importance and Organizational Size}
+    \label{interaction_size}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering 
+    \includegraphics[width=\linewidth]{interaction_ntee.png}
+    \caption{Predicted Probability by Volunteer Importance and NTEE single/multiple}
+    \label{interaction_ntee}
+\end{figure}
+
+%\bibliographystyle{IEEEtran}
+%\bibliography{refs}
+
+\end{document}

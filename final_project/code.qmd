@@ -1,0 +1,531 @@
+---
+title: "STATS-506 Final Project Code"
+author: "Zekai Xu"
+format:
+  pdf:
+    engine: xelatex
+    latex-auto-install: false
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: visual
+---
+
+```{r global_setting}
+library(tidyverse)
+library(ggplot2)
+library(survey)
+library(broom)
+library(stringr)
+library(readr)
+
+options(survey.lonely.pus = "adjust")
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+SEED <- 506
+set.seed(SEED)
+```
+
+
+```{r data_preprocessing}
+#-----Load Dataset-----
+file_path <- "./dataset/2021puf.csv"
+puf <- read.csv(file_path)
+
+#-----Data Preprocessing-----
+##-----Filter Required Columns-----
+ntee_cols <- paste0("NTEE_", 1:26)
+size_cols <- paste0("SizeStrata", 1:5)
+required_cols <- c(
+  ntee_cols, # NTEE Category: `1` for check, `-99` for not answer
+  "NTEEconf", # Filter on NTEE Cetagory Quality: `-99` for not to answer, `0` for doesn't fit, `1` for yes, `2` for yes but also conduct other activities
+  "VolImportance", # Importance of Volunteers: `1-5` for importance, `-99` for not to answer, `99` for do not use volunteers
+  "DonImportance", # Importance of Donations: `-99` for not answer, `NA` for missing value, `1-5` for level, `99` for doesn't receive donations
+  "SizeStrata", # Organizational Size: char value, connected with `size_cols`
+  size_cols, # Organizational Size Category: `1` for yes, `0` for no
+  "CensusRegion4", # Region: 9 unique string
+  "CensusRegion9", # Region: 4 unique string
+  "weight_complete_partials", # Weights that includes partials: numerics
+  "weight_complete_only" # Weights that excludes partials: numerics
+)
+puf <- puf[required_cols]
+##-----Convert Some Column With Specific Values to NA-----
+### Helper function
+convert2na <- function(x, val) {return(if_else(x == val, NA_integer_, x))}
+### NTEE_1 - NTEE_26
+puf <- puf %>% 
+  mutate(
+    across(
+      all_of(ntee_cols),
+      ~ case_when(
+        . == 1 ~ 1L, 
+        . == -99 ~ 0L,
+        TRUE ~ NA_integer_
+      )
+    )
+  )
+### NTEEconf
+puf$NTEEconf <- convert2na(puf$NTEEconf, -99)
+### VolImportance & DonImportance
+puf <- puf %>%
+  mutate(
+    has_volunteers = if_else(VolImportance == 99, 0L, 1L, missing = NA_integer_),
+    has_donations  = if_else(DonImportance == 99, 0L, 1L, missing = NA_integer_),
+
+    VolImp_scale = if_else(VolImportance %in% c(-99, 99), NA_integer_, VolImportance),
+    DonImp_scale = if_else(DonImportance %in% c(-99, 99), NA_integer_, DonImportance)
+  )
+##-----Filter No Ntee checks record and NTEEconf == 0 records
+puf <- puf %>% 
+  #mutate(ntee_score = apply(puf[ntee_cols], 1, sum, na.rm=TRUE)) %>%
+  mutate(ntee_score = rowSums(across(all_of(ntee_cols)), na.rm=TRUE)) %>%
+  filter(ntee_score >= 1 & NTEEconf != 0)
+##-----Drop records with NA `VolImportance` or `DonImportance` 
+puf <- puf[!is.na(puf$VolImportance), ]
+puf <- puf[!is.na(puf$DonImportance), ]
+```
+
+
+```{r factor}
+#-----Create fatcor for `VolImportance` and `DonImportance`
+puf <- puf %>%
+  mutate(
+    VolImportance_f = factor(
+      VolImp_scale,
+      levels = 1:5,
+      labels = c("Extremely", "Very", "Moderately", "Slightly", "Not at all"),
+      ordered = FALSE #TRUE
+    ),
+    DonImportance_f = factor(
+      DonImp_scale,
+      levels = 1:5,
+      labels = c("Extremely", "Very", "Moderately", "Slightly", "Not at all"),
+      ordered = FALSE #TRUE
+    ),
+    don_high = if_else(DonImp_scale <= 2, 1L, 0L, missing = NA_integer_)
+  )
+puf <- puf %>% mutate(
+  VolImportance_f = relevel(VolImportance_f, ref = "Not at all"),
+  DonImportance_f = relevel(DonImportance_f, ref = "Not at all")
+)
+#-----Create factor for SizeStrata and Region-----
+puf <- puf %>% 
+  mutate(
+    SizeStrata = factor(SizeStrata),
+    CensusRegion4 = factor(CensusRegion4),
+    CensusRegion9 = factor(CensusRegion9)
+  )
+```
+
+```{r survey}
+puf_survey <- puf %>% 
+  filter(!is.na(VolImportance_f) & !is.na(DonImportance_f))
+#-----Complete + Partials-----
+design_A <- svydesign(
+  ids = ~ 1,
+  weights = ~ weight_complete_partials,
+  data = puf_survey
+)
+#-----Complete Only-----
+design_B <- svydesign(
+  ids = ~ 1,
+  weights = ~ weight_complete_only,
+  data = puf_survey
+)
+```
+
+```{r eda_distribution_table}
+# VolImportance Weighted Proportion
+tab_vol <- svytable(~ VolImportance_f, design = design_A)
+prop_vol <- prop.table(tab_vol)
+
+# DonImportance Weighted Proportion
+tab_don <- svytable(~ DonImportance_f, design = design_A)
+prop_don <- prop.table(tab_don)
+```
+
+```{r P(don_high | VolImportance), include = FALSE, echo = FALSE}
+prob_don_given_vol <- svyby(
+  ~ don_high,
+  ~ VolImportance_f,
+  design = design_A,
+  FUN = svymean,
+  na.rm = TRUE,
+  vartype = c("se", "ci")
+)
+
+prob_don_given_vol
+```
+
+```{r figure1, include = FALSE, echo = FALSE}
+prob_don_given_vol$VolImportance_f <- factor(
+  prob_don_given_vol$VolImportance_f,
+  levels = c("Not at all", "Slightly", "Moderately", "Very", "Extremely"),
+  ordered = TRUE
+)
+
+ggplot(prob_don_given_vol,
+       aes(x = VolImportance_f, y = don_high)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = ci_l, ymax = ci_u),
+                width = 0.1) +
+  labs(
+    x = "Perceived importance of volunteers",
+    y = "Pr(donations very/extremely important)",
+    title = "Weighted probability of high donation importance\nby volunteer importance"
+  ) +
+  theme_minimal()
+```
+
+```{r main_effect_model_design_A}
+form_main <- as.formula(
+  paste(
+    "don_high ~ VolImportance_f + SizeStrata + CensusRegion4 +",
+    paste(ntee_cols, collapse = " + ")
+  )
+)
+
+model_main_A <- svyglm(
+  form_main,
+  design = design_A,
+  family = quasibinomial()
+)
+
+main_A_tidy <- tidy(model_main_A, conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r main_effect_visualization_design_A}
+#-----Forest Plot: VolImportance-----
+vol_or <- main_A_tidy %>%
+  # Keep only VolImportance terms (exclude intercept)
+  filter(str_detect(term, "^VolImportance_f")) %>%
+  # Extract level name from term
+  mutate(
+    vol_level = str_remove(term, "VolImportance_f"),
+    vol_level = str_remove(vol_level, "^"),
+    # Order factor levels; baseline "Not at all" has no coefficient
+    vol_level = factor(
+      vol_level,
+      levels = c("Slightly", "Moderately", "Very", "Extremely")
+    )
+  )
+
+ggplot(vol_or,
+       aes(x = estimate, y = vol_level)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.1) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  labs(
+    x = "Odds ratio for high donation importance\n(ref: volunteers 'Not at all important')",
+    y = "Volunteer importance level",
+    title = "Survey-weighted odds ratios by volunteer importance"
+  ) +
+  theme_minimal()
+
+#-----Forest Plot: more variables-----
+main_plot_df <- main_A_tidy %>%
+  filter(term != "(Intercept)") %>%
+  filter(
+    str_detect(term, "^VolImportance_f") |
+      str_detect(term, "^SizeStrata") |
+      str_detect(term, "^CensusRegion4")
+  ) %>%
+  mutate(
+    is_size   = str_detect(term, "^SizeStrata"),
+    is_region = str_detect(term, "^CensusRegion4"),
+    # numeric lower bound for each SizeStrata term
+    size_min = if_else(
+      is_size,
+      if_else(
+        str_detect(term, "million"),
+        parse_number(term) * 1e6,  # e.g. "1 million" -> 1e6, "10 million" -> 1e7
+        parse_number(term)         # e.g. "$100,000" -> 100000
+      ),
+      NA_real_
+    )
+  )
+
+# desired order within each group
+vol_order <- c(
+  "VolImportance_fSlightly",
+  "VolImportance_fModerately",
+  "VolImportance_fVery",
+  "VolImportance_fExtremely"
+)
+
+size_order <- main_plot_df %>%
+  filter(is_size) %>%
+  arrange(size_min) %>%      # 100k -> 500k -> 1M -> 10M
+  pull(term)
+
+region_order <- main_plot_df %>%
+  filter(is_region) %>%
+  pull(term)                 # keep existing region order
+
+# overall order from top to bottom in plot
+term_order <- c(
+  vol_order,       # VolImportance at top
+  size_order,      # SizeStrata small -> large
+  region_order     # Regions at bottom
+)
+
+main_plot_df <- main_plot_df %>%
+  mutate(
+    term_pretty = factor(term, levels = rev(term_order))
+    # rev() so that first element of term_order 显示在图顶端
+  )
+
+ggplot(main_plot_df,
+       aes(x = estimate, y = term_pretty)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.15) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  labs(
+    x = "Odds ratio (log scale)",
+    y = NULL,
+    title = "Adjusted odds ratios from main model"
+  ) +
+  theme_minimal()
+
+#-----Predictive Plot: how Pr(don_high = 1) change over VolImportance-----
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+size_mode <- Mode(puf_survey$SizeStrata)
+reg_mode  <- Mode(puf_survey$CensusRegion4)
+
+newdata_vol <- data.frame(
+  VolImportance_f = factor(
+    c("Not at all", "Slightly", "Moderately", "Very", "Extremely"),
+    levels = levels(puf_survey$VolImportance_f),
+    ordered = FALSE #TRUE
+  ),
+  SizeStrata = factor(size_mode, levels = levels(puf_survey$SizeStrata)),
+  CensusRegion4 = factor(reg_mode, levels = levels(puf_survey$CensusRegion4))
+)
+
+newdata_vol$VolImportance_f <- forcats::fct_relevel(
+  newdata_vol$VolImportance_f,
+  "Not at all", "Slightly", "Moderately", "Very", "Extremely"
+)
+
+# Set NTEE_1–NTEE_26 to 0 (not in these fields) for prediction
+for (col in ntee_cols) {
+  newdata_vol[[col]] <- 0L
+}
+
+# Predict probability using survey-weighted model
+newdata_vol$pred <- predict(
+  model_main_A,
+  newdata = newdata_vol,
+  type = "response"
+)
+
+ggplot(newdata_vol,
+       aes(x = VolImportance_f, y = pred, group = 1)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    x = "Perceived importance of volunteers",
+    y = "Predicted Pr(donations very/extremely important)",
+    title = "Adjusted predicted probability by volunteer importance\n(holding size, region, NTEE fixed)"
+  ) +
+  theme_minimal()
+```
+
+```{r update_ntee}
+puf_survey <- puf_survey %>%
+  mutate(
+    ntee_single_multi = case_when(
+      ntee_score == 1 ~ "Single",
+      ntee_score > 1 ~ "Multiple"
+    ),
+    ntee_single_multi = factor(
+      ntee_single_multi,
+      levels = c("Single", "Multiple")
+    )
+  )
+
+design_A <- update(
+  design_A,
+  ntee_single_multi = puf_survey$ntee_single_multi
+)
+design_B <- update(
+  design_B,
+  ntee_single_multi = puf_survey$ntee_single_multi
+)
+```
+
+```{r interaction: VolImportance_SizeStrata}
+#-----Fit Interaction Model-----
+form_size_int <- as.formula(
+  paste(
+    "don_high ~ VolImportance_f * SizeStrata +",
+    "CensusRegion4 + ntee_single_multi +",
+    paste(ntee_cols, collapse = " + ")
+  )
+)
+
+model_size_int_A <- svyglm(
+  form_size_int,
+  design = design_A,
+  family = quasibinomial()
+)
+
+#-----Predictive Probability-----
+vol_levels <- c("Not at all", "Slightly", "Moderately", "Very", "Extremely")
+
+# Helper for mode (if not already defined)
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Fit interaction model (if not already fit)
+form_size_int <- as.formula(
+  paste(
+    "don_high ~ VolImportance_f * SizeStrata +",
+    "CensusRegion4 + ntee_single_multi +",
+    paste(ntee_cols, collapse = " + ")
+  )
+)
+
+model_size_int_A <- svyglm(
+  form_size_int,
+  design = design_A,
+  family = quasibinomial()
+)
+
+sizes_all   <- levels(puf_survey$SizeStrata)
+#sizes_to_plot <- sizes_all[c(1, ceiling(length(sizes_all) / 2), length(sizes_all))]
+
+reg_mode  <- Mode(puf_survey$CensusRegion4)
+ntee_mode <- Mode(puf_survey$ntee_single_multi)
+
+# Newdata for prediction
+newdata_size <- expand.grid(
+  VolImportance_f = vol_levels,
+  SizeStrata      = sizes_all,
+  KEEP.OUT.ATTRS  = FALSE,
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    VolImportance_f   = factor(VolImportance_f, levels = vol_levels),
+    SizeStrata        = factor(SizeStrata, levels = levels(puf_survey$SizeStrata)),
+    CensusRegion4     = factor(reg_mode, levels = levels(puf_survey$CensusRegion4)),
+    ntee_single_multi = factor(ntee_mode, levels = levels(puf_survey$ntee_single_multi))
+  )
+
+# Set NTEE_1–NTEE_26 to 0 for prediction
+for (col in ntee_cols) {
+  newdata_size[[col]] <- 0L
+}
+
+# Predict probabilities
+newdata_size$pred <- predict(
+  model_size_int_A,
+  newdata = newdata_size,
+  type = "response"
+)
+
+# Plot with colors and legend, ordered x-axis
+ggplot(newdata_size,
+       aes(x = VolImportance_f, y = pred,
+           group = SizeStrata, color = SizeStrata)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(limits = vol_levels) +
+  labs(
+    x = "Volunteer importance",
+    y = "Predicted Pr(donations very/extremely important)",
+    color = "SizeStrata",
+    title = "Predicted probability by volunteer importance\nand organizational size"
+  ) +
+  theme_minimal()
+```
+
+```{r interaction: VolImportance_ntee_single_multi}
+vol_levels <- c("Not at all", "Slightly", "Moderately", "Very", "Extremely")
+
+form_ntee_int <- don_high ~ VolImportance_f * ntee_single_multi +
+  SizeStrata + CensusRegion4
+
+model_ntee_int_A <- svyglm(
+  form_ntee_int,
+  design = design_A,
+  family = quasibinomial()
+)
+
+reg_mode  <- Mode(puf_survey$CensusRegion4)
+size_mode <- Mode(puf_survey$SizeStrata)
+
+newdata_ntee <- expand.grid(
+  VolImportance_f   = vol_levels,
+  ntee_single_multi = levels(puf_survey$ntee_single_multi),
+  KEEP.OUT.ATTRS    = FALSE,
+  stringsAsFactors  = FALSE
+) %>%
+  mutate(
+    VolImportance_f   = factor(VolImportance_f, levels = vol_levels),
+    ntee_single_multi = factor(ntee_single_multi,
+                               levels = levels(puf_survey$ntee_single_multi)),
+    SizeStrata        = factor(size_mode, levels = levels(puf_survey$SizeStrata)),
+    CensusRegion4     = factor(reg_mode,  levels = levels(puf_survey$CensusRegion4))
+  )
+
+newdata_ntee$pred <- predict(
+  model_ntee_int_A,
+  newdata = newdata_ntee,
+  type = "response"
+)
+
+ggplot(newdata_ntee,
+       aes(x = VolImportance_f, y = pred, group = ntee_single_multi,
+           color = ntee_single_multi)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(limits = vol_levels) +  # enforce x order
+  labs(
+    x = "Volunteer importance",
+    y = "Predicted Pr(donations very/extremely important)",
+    color = "NTEE pattern",
+    title = "Predicted probability by volunteer importance\nand NTEE single/multiple"
+  ) +
+  theme_minimal()
+```
+
+```{r sensitivity}
+model_main_B <- svyglm(
+  form_main,          
+  design = design_B,
+  family = quasibinomial()
+)
+
+main_A_tidy <- tidy(model_main_A, conf.int = TRUE, exponentiate = TRUE)
+main_B_tidy <- tidy(model_main_B, conf.int = TRUE, exponentiate = TRUE)
+
+or_by_design <- bind_rows(
+  main_A_tidy %>% mutate(design = "A: complete + partial"),
+  main_B_tidy %>% mutate(design = "B: complete only")
+) %>%
+  filter(str_detect(term, "^VolImportance_f")) %>%
+  mutate(
+    level = str_remove(term, "^VolImportance_f"),
+    OR     = round(estimate, 2),
+    CI_low = round(conf.low, 2),
+    CI_high = round(conf.high, 2),
+    OR_CI  = sprintf("%.2f [%.2f, %.2f]", OR, CI_low, CI_high)
+  ) %>%
+  select(design, level, OR_CI)
+
+or_by_design
+```
+
